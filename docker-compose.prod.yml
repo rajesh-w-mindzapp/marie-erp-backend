@@ -1,0 +1,126 @@
+services:
+  # MySQL Database (Production)
+  mysql:
+    image: mysql:8.0
+    container_name: marie-mysql-prod
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASS}
+    ports:
+      - "127.0.0.1:3306:3306"  # Only allow local connections
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro  # Custom MySQL config
+    networks:
+      - marie-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/mysqld
+
+  # Node.js Backend (Production)
+  backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: marie-backend-prod
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"  # Only allow local connections
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DB_HOST=mysql
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=${DB_NAME}
+      - JWT_SECRET=${JWT_SECRET}
+      - USER_EMAIL=${USER_EMAIL}
+      - USER_PASS=${USER_PASS}
+      - EMAIL_USER=${EMAIL_USER}
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - marie-network
+    volumes:
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads  # For file uploads if needed
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/tmp
+
+  # Nginx Reverse Proxy (Production)
+  nginx:
+    image: nginx:alpine
+    container_name: marie-nginx-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - backend
+    networks:
+      - marie-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  marie-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16 
