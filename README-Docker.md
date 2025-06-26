@@ -1,12 +1,13 @@
 # Marie ERP FoodSecure Backend - Docker Deployment
 
-This document provides instructions for deploying the Marie ERP FoodSecure Backend using Docker and Docker Compose.
+This document provides instructions for deploying the Marie ERP FoodSecure Backend using Docker and Docker Compose with automatic SSL certificate management.
 
 ## Prerequisites
 
 - Docker (version 20.10 or higher)
 - Docker Compose (version 2.0 or higher)
 - Git
+- A domain name pointing to your server (for SSL certificates)
 
 ## Quick Start
 
@@ -41,15 +42,21 @@ USER_EMAIL=your-email@gmail.com
 USER_PASS=your-app-password
 EMAIL_USER=your-email@gmail.com
 
+# Let's Encrypt Configuration (for SSL certificates)
+DOMAIN_NAME=your-domain.com
+LETSENCRYPT_EMAIL=your-email@gmail.com
+
 # Server Configuration
 PORT=3000
 NODE_ENV=production
 ```
 
 ### 3. Build and Start Services
+
+#### Development Environment
 ```bash
 # Build and start all services
-docker-compose up -d
+./scripts/dev-deploy.sh
 
 # View logs
 docker-compose logs -f
@@ -58,9 +65,63 @@ docker-compose logs -f
 docker-compose ps
 ```
 
+#### Production Environment with SSL
+```bash
+# Deploy with automatic SSL setup
+./scripts/deploy.sh
+
+# View logs
+docker-compose -f docker-compose.prod.yml logs -f
+
+# Check service status
+docker-compose -f docker-compose.prod.yml ps
+```
+
 ### 4. Verify Deployment
-- Backend API: http://localhost:3000
-- Database: localhost:3306 (MySQL)
+- **Development**: Backend API: http://localhost:3000
+- **Production**: 
+  - HTTPS: https://your-domain.com
+  - HTTP (redirects to HTTPS): http://your-domain.com
+  - Database: localhost:3306 (MySQL)
+
+## SSL Certificate Management
+
+### Automatic SSL Setup
+The production deployment automatically sets up Let's Encrypt SSL certificates:
+
+```bash
+# Initial SSL setup (included in production deployment)
+./scripts/deploy.sh
+
+# Manual SSL setup
+./scripts/ssl-setup.sh setup
+```
+
+### SSL Management Commands
+```bash
+# Check certificate status
+./scripts/ssl-setup.sh check
+
+# Renew certificate
+./scripts/ssl-setup.sh renew
+
+# Test SSL configuration
+./scripts/ssl-setup.sh test
+
+# Setup automatic renewal
+./scripts/ssl-setup.sh auto-renew
+
+# Staging mode (for testing)
+./scripts/ssl-setup.sh staging
+
+# Production mode
+./scripts/ssl-setup.sh production
+```
+
+### SSL Certificate Locations
+- **Certificates**: `nginx/ssl/live/your-domain.com/`
+- **Webroot**: `nginx/www/`
+- **Auto-renewal**: Configured via cron job
 
 ## Service Architecture
 
@@ -78,14 +139,27 @@ docker-compose ps
    - Barcode generation
    - Health checks
 
+3. **nginx** (Reverse Proxy - Production)
+   - SSL termination
+   - Rate limiting
+   - Security headers
+   - Let's Encrypt challenge handling
+
+4. **certbot** (SSL Management - Production)
+   - Let's Encrypt certificate automation
+   - Automatic renewal
+   - Webroot challenge validation
+
 ### Network
 - Custom bridge network: `marie-network`
 - Internal communication between services
-- Port 3000 exposed for external access
+- Port 80/443 exposed for external access (production)
 
 ### Volumes
 - `mysql_data`: Persistent MySQL data storage
-- `./logs`: Application logs (optional)
+- `./logs`: Application logs
+- `./nginx/ssl`: SSL certificates
+- `./nginx/www`: Let's Encrypt webroot
 
 ## API Endpoints
 
@@ -94,7 +168,6 @@ docker-compose ps
 - `POST /auth/login` - User login
 - `POST /auth/send-otp` - Send OTP
 - `POST /auth/otpverify` - Verify OTP
-- `POST /auth/update-password` - Update password
 
 ### Categories
 - `GET /categories/getAll` - Get all categories
@@ -125,12 +198,20 @@ docker-compose ps
 
 ### Start Services
 ```bash
+# Development
 docker-compose up -d
+
+# Production
+docker-compose -f docker-compose.prod.yml up -d
 ```
 
 ### Stop Services
 ```bash
+# Development
 docker-compose down
+
+# Production
+docker-compose -f docker-compose.prod.yml down
 ```
 
 ### View Logs
@@ -141,6 +222,9 @@ docker-compose logs -f
 # Specific service
 docker-compose logs -f backend
 docker-compose logs -f mysql
+
+# Production
+docker-compose -f docker-compose.prod.yml logs -f
 ```
 
 ### Restart Services
@@ -150,6 +234,9 @@ docker-compose restart
 
 # Specific service
 docker-compose restart backend
+
+# Production
+docker-compose -f docker-compose.prod.yml restart
 ```
 
 ### Update Application
@@ -160,6 +247,9 @@ git pull
 # Rebuild and restart
 docker-compose down
 docker-compose up -d --build
+
+# Production
+./scripts/deploy.sh
 ```
 
 ### Database Management
@@ -172,6 +262,9 @@ docker-compose exec mysql mysqldump -u root -p marie_erp > backup.sql
 
 # Restore database
 docker-compose exec -T mysql mysql -u root -p marie_erp < backup.sql
+
+# Production
+docker-compose -f docker-compose.prod.yml exec mysql mysql -u root -p
 ```
 
 ### Clean Up
@@ -184,13 +277,17 @@ docker-compose down -v
 
 # Remove images
 docker-compose down --rmi all
+
+# Production
+docker-compose -f docker-compose.prod.yml down
 ```
 
 ## Health Checks
 
-Both services include health checks:
+All services include health checks:
 - **MySQL**: Uses `mysqladmin ping`
 - **Backend**: HTTP GET request to root endpoint
+- **Nginx**: Reverse proxy health
 
 Check health status:
 ```bash
@@ -202,8 +299,9 @@ docker-compose ps
 1. **Change Default Passwords**: Update all default passwords in `.env`
 2. **JWT Secret**: Use a strong, unique JWT secret
 3. **Email Credentials**: Use app-specific passwords for email services
-4. **Network Security**: Consider using reverse proxy (nginx) for production
-5. **SSL/TLS**: Implement HTTPS for production deployments
+4. **SSL/TLS**: Automatically configured with Let's Encrypt
+5. **Rate Limiting**: Configured via Nginx
+6. **Security Headers**: XSS protection, HSTS, etc.
 
 ## Production Deployment
 
@@ -212,10 +310,17 @@ Ensure all production environment variables are properly set:
 - Strong database passwords
 - Secure JWT secret
 - Valid email credentials
+- Domain name for SSL
 - Production NODE_ENV
 
+### SSL Certificate Setup
+1. **Domain Configuration**: Ensure your domain points to your server
+2. **Firewall**: Open ports 80 and 443
+3. **Initial Setup**: Run `./scripts/deploy.sh` for automatic SSL setup
+4. **Verification**: Check certificate with `./scripts/ssl-setup.sh check`
+
 ### Resource Limits
-Add resource limits to `docker-compose.yml`:
+Add resource limits to `docker-compose.prod.yml`:
 ```yaml
 services:
   backend:
@@ -266,13 +371,25 @@ Consider adding monitoring services:
    docker-compose exec backend env | grep DB_
    ```
 
-3. **Permission Issues**
+3. **SSL Certificate Issues**
+   ```bash
+   # Check certificate status
+   ./scripts/ssl-setup.sh check
+   
+   # Check Nginx logs
+   docker-compose -f docker-compose.prod.yml logs nginx
+   
+   # Test SSL configuration
+   ./scripts/ssl-setup.sh test
+   ```
+
+4. **Permission Issues**
    ```bash
    # Fix file permissions
    sudo chown -R $USER:$USER .
    ```
 
-4. **Memory Issues**
+5. **Memory Issues**
    ```bash
    # Check container resource usage
    docker stats
@@ -285,6 +402,9 @@ docker-compose logs | grep -i error
 
 # Follow real-time logs
 docker-compose logs -f --tail=100
+
+# Production logs
+docker-compose -f docker-compose.prod.yml logs -f
 ```
 
 ## Support
@@ -294,6 +414,7 @@ For issues and questions:
 2. Verify environment configuration
 3. Ensure all prerequisites are met
 4. Check Docker and Docker Compose versions
+5. Verify domain DNS configuration for SSL
 
 ## License
 

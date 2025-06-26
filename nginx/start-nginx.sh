@@ -1,3 +1,16 @@
+#!/bin/bash
+
+# Nginx startup script with SSL certificate handling
+
+# Check if SSL certificates exist
+if [ -f "/etc/nginx/ssl/live/gomarie.com/fullchain.pem" ] && [ -f "/etc/nginx/ssl/live/gomarie.com/privkey.pem" ]; then
+    echo "SSL certificates found, starting Nginx with HTTPS support"
+    # Use the full nginx.conf with SSL
+    exec nginx -g "daemon off;"
+else
+    echo "SSL certificates not found, starting Nginx in HTTP-only mode"
+    # Create a temporary nginx config without SSL
+    cat > /etc/nginx/nginx-http.conf << 'EOF'
 events {
     worker_connections 1024;
 }
@@ -49,7 +62,7 @@ http {
         keepalive 32;
     }
 
-    # HTTP server (for Let's Encrypt challenges and redirects)
+    # HTTP server (for Let's Encrypt challenges and API)
     server {
         listen 80;
         server_name _;
@@ -59,33 +72,6 @@ http {
             root /var/www/certbot;
             try_files $uri =404;
         }
-
-        # Redirect all other HTTP requests to HTTPS
-        location / {
-            return 301 https://$host$request_uri;
-        }
-    }
-
-    # HTTPS server
-    server {
-        listen 443 ssl http2;
-        server_name _;
-
-        # SSL configuration with Let's Encrypt
-        ssl_certificate /etc/nginx/ssl/live/gomarie.com/fullchain.pem;
-        ssl_certificate_key /etc/nginx/ssl/live/gomarie.com/privkey.pem;
-        ssl_protocols TLSv1.2 TLSv1.3;
-        ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
-        ssl_prefer_server_ciphers off;
-        ssl_session_cache shared:SSL:10m;
-        ssl_session_timeout 10m;
-
-        # Security headers
-        add_header X-Frame-Options DENY;
-        add_header X-Content-Type-Options nosniff;
-        add_header X-XSS-Protection "1; mode=block";
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin";
 
         # API routes with rate limiting
         location /auth/ {
@@ -126,4 +112,9 @@ http {
             add_header Content-Type text/plain;
         }
     }
-} 
+}
+EOF
+    
+    # Start nginx with HTTP-only config
+    exec nginx -c /etc/nginx/nginx-http.conf -g "daemon off;"
+fi 

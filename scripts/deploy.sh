@@ -147,6 +147,28 @@ wait_for_health() {
     fi
 }
 
+# Function to setup SSL certificates
+setup_ssl() {
+    print_status "Setting up SSL certificates..."
+    
+    # Check if SSL setup is needed
+    if [ -z "$DOMAIN_NAME" ] || [ -z "$LETSENCRYPT_EMAIL" ]; then
+        print_warning "SSL setup skipped - DOMAIN_NAME or LETSENCRYPT_EMAIL not configured"
+        return 0
+    fi
+    
+    # Check if certificate already exists
+    if [ -f "nginx/ssl/live/$DOMAIN_NAME/fullchain.pem" ]; then
+        print_status "SSL certificate already exists, checking validity..."
+        ./scripts/ssl-setup.sh check
+    else
+        print_status "Setting up new SSL certificate..."
+        ./scripts/ssl-setup.sh setup
+    fi
+    
+    print_success "SSL setup completed"
+}
+
 # Function to run database migrations
 run_migrations() {
     print_status "Running database migrations..."
@@ -175,17 +197,29 @@ verify_deployment() {
         exit 1
     fi
     
+    # Test SSL if configured
+    if [ -n "$DOMAIN_NAME" ] && [ -f "nginx/ssl/live/$DOMAIN_NAME/fullchain.pem" ]; then
+        print_status "Testing SSL configuration..."
+        ./scripts/ssl-setup.sh test
+    fi
+    
     print_success "Deployment verification completed"
 }
 
 # Function to show deployment info
 show_deployment_info() {
     echo ""
-    print_success "Deployment completed successfully!"
+    print_success "Production deployment completed successfully!"
     echo ""
     echo "Service URLs:"
     echo "  - Backend API: http://localhost:3000"
     echo "  - Database: localhost:3306"
+    
+    if [ -n "$DOMAIN_NAME" ]; then
+        echo "  - HTTPS: https://$DOMAIN_NAME"
+        echo "  - HTTP (redirects to HTTPS): http://$DOMAIN_NAME"
+    fi
+    
     echo ""
     echo "Useful commands:"
     echo "  - View logs: docker-compose -f $COMPOSE_FILE logs -f"
@@ -193,6 +227,13 @@ show_deployment_info() {
     echo "  - Restart services: docker-compose -f $COMPOSE_FILE restart"
     echo "  - Create backup: ./scripts/backup.sh"
     echo "  - Restore backup: ./scripts/restore.sh <backup_file>"
+    
+    if [ -n "$DOMAIN_NAME" ]; then
+        echo "  - Check SSL: ./scripts/ssl-setup.sh check"
+        echo "  - Renew SSL: ./scripts/ssl-setup.sh renew"
+        echo "  - Test SSL: ./scripts/ssl-setup.sh test"
+    fi
+    
     echo ""
 }
 
@@ -207,6 +248,7 @@ main() {
     pull_changes
     deploy_services
     wait_for_health
+    setup_ssl
     run_migrations
     verify_deployment
     show_deployment_info
