@@ -1,10 +1,20 @@
 const db = require('../config/db');
+const logger = require('../config/logger');
 
 exports.getUserProfile = async (req, res) => {
     try {
         const userId = req.query.userId;
 
+        logger.info('Get user profile requested', {
+            userId: userId,
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+        });
+
         if (!userId) {
+            logger.warn('Get user profile failed - missing userId', {
+                ip: req.ip
+            });
             return res.status(400).json({ message: 'User ID is required' });
         }
 
@@ -21,19 +31,38 @@ exports.getUserProfile = async (req, res) => {
         );
 
         if (userProfile.length === 0) {
+            logger.warn('Get user profile failed - user not found', {
+                userId: userId,
+                ip: req.ip
+            });
             return res.status(404).json({ message: 'User not found' });
         }
 
+        const profile = userProfile[0];
+        logger.info('User profile retrieved successfully', {
+            userId: userId,
+            businessName: profile.business_name,
+            email: profile.email,
+            plan: profile.plan,
+            planEndDate: profile.plan_end_date,
+            ip: req.ip
+        });
+
         res.json({
-            id: userProfile[0].id,
-            business_name: userProfile[0].business_name,
-            email: userProfile[0].email,
-            plan: userProfile[0].plan,
-            plan_end_date: userProfile[0].plan_end_date
+            id: profile.id,
+            business_name: profile.business_name,
+            email: profile.email,
+            plan: profile.plan,
+            plan_end_date: profile.plan_end_date
         });
 
     } catch (error) {
-        console.error('Error fetching user profile:', error);
+        logger.error('Unexpected error in getUserProfile', {
+            error: error.message,
+            userId: req.query?.userId,
+            ip: req.ip,
+            stack: error.stack
+        });
         res.status(500).json({ message: 'Error fetching user profile' });
     }
 }; 

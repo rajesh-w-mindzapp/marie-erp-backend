@@ -5,6 +5,10 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/marie-backend.js",
+    "dev": "cross-env NODE_ENV=development node src/marie-backend.js",
+    "prod": "cross-env NODE_ENV=production node src/marie-backend.js",
+    "logs:cleanup": "node scripts/log-cleanup.js cleanup",
+    "logs:stats": "node scripts/log-cleanup.js stats",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -15,11 +19,15 @@
     "bcryptjs": "^3.0.2",
     "canvas": "^3.1.0",
     "cors": "^2.8.5",
+    "cross-env": "^7.0.3",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "jsbarcode": "^3.11.6",
     "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
     "mysql2": "^3.14.0",
-    "nodemailer": "^7.0.2"
+    "nodemailer": "^7.0.2",
+    "winston": "^3.11.0",
+    "winston-daily-rotate-file": "^4.7.1"
   }
 }

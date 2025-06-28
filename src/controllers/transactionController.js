@@ -1,18 +1,41 @@
 const db = require('../config/db');
+const logger = require('../config/logger');
 
 // Get transactions between dates for an item
 exports.getItemTransactions = async (req, res) => {
   try {
     const { itemId, userId, fromDate, toDate } = req.query;
 
-    console.log(itemId, userId, fromDate, toDate);
+    logger.info('Get item transactions requested', {
+      itemId: itemId,
+      userId: userId,
+      fromDate: fromDate,
+      toDate: toDate,
+      ip: req.ip,
+      userAgent: req.get('User-Agent')
+    });
     
     if (!itemId || !userId || !fromDate || !toDate) {
+      logger.warn('Get item transactions failed - missing required parameters', {
+        itemId: itemId,
+        userId: userId,
+        fromDate: fromDate,
+        toDate: toDate,
+        ip: req.ip
+      });
       return res.status(400).json({ message: 'Missing required parameters' });
     }
 
     const fromDateUTC = new Date(fromDate);
     const toDateUTC = new Date(toDate);
+
+    logger.info('Date range parsed', {
+      itemId: itemId,
+      userId: userId,
+      fromDateUTC: fromDateUTC.toISOString(),
+      toDateUTC: toDateUTC.toISOString(),
+      ip: req.ip
+    });
 
     // Get user's plan and item details
     const [userAndItem] = await db.promise().query(
@@ -25,10 +48,24 @@ exports.getItemTransactions = async (req, res) => {
     );
 
     if (userAndItem.length === 0) {
+      logger.warn('Get item transactions failed - item or user not found', {
+        itemId: itemId,
+        userId: userId,
+        ip: req.ip
+      });
       return res.status(404).json({ message: 'Item or user not found' });
     }
 
     const { plan, package_type, measure } = userAndItem[0];
+
+    logger.info('User and item details retrieved', {
+      itemId: itemId,
+      userId: userId,
+      plan: plan,
+      packageType: package_type,
+      measure: measure,
+      ip: req.ip
+    });
 
     // Fetch ALL transactions (both ins and outs) for the item
     const [allTransactions] = await db.promise().query(
@@ -52,6 +89,13 @@ exports.getItemTransactions = async (req, res) => {
       `,
       [itemId, userId, itemId, userId]
     );
+
+    logger.info('All transactions retrieved', {
+      itemId: itemId,
+      userId: userId,
+      transactionCount: allTransactions.length,
+      ip: req.ip
+    });
 
     // Track batches for FIFO
     let batches = [];
@@ -228,10 +272,30 @@ exports.getItemTransactions = async (req, res) => {
       }
     };
 
+    logger.info('Item transactions report generated successfully', {
+      itemId: itemId,
+      userId: userId,
+      openingQuantity: Math.round(openingQuantity),
+      totalInPeriod: Math.round(totalInPeriod),
+      totalOutPeriod: Math.round(totalOutPeriod),
+      closingQuantity: Math.round(closingQuantity),
+      totalUsage: Math.round(totalUsage),
+      transactionCount: formattedReport.length,
+      ip: req.ip
+    });
+
     res.json(response);
 
   } catch (error) {
-    console.error('Error fetching transactions:', error);
+    logger.error('Unexpected error in getItemTransactions', {
+      error: error.message,
+      itemId: req.query?.itemId,
+      userId: req.query?.userId,
+      fromDate: req.query?.fromDate,
+      toDate: req.query?.toDate,
+      ip: req.ip,
+      stack: error.stack
+    });
     res.status(500).json({ message: 'Error fetching transactions' });
   }
 };

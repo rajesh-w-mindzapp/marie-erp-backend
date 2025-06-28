@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('../config/db');
 const nodemailer = require("nodemailer")
+const logger = require('../config/logger');
 
 const transporter = nodemailer.createTransport({
     service: 'gmail', // or any other SMTP service you're using
@@ -15,8 +16,20 @@ exports.emailverify= async(req, res)=>{
     try {
         const { email, otp } = req.body;
         
+        logger.info('Email verification requested', {
+            email: email,
+            hasOtp: !!otp,
+            ip: req.ip,
+            userAgent: req.get('User-Agent')
+        });
+        
         if (!email || !otp) {
-          return res.status(400).json({ success: false, message: 'Email and OTP are required' });
+            logger.warn('Email verification failed - missing required fields', {
+                email: email,
+                hasOtp: !!otp,
+                ip: req.ip
+            });
+            return res.status(400).json({ success: false, message: 'Email and OTP are required' });
         }
     
         // Email options
@@ -40,12 +53,22 @@ exports.emailverify= async(req, res)=>{
         // Send email
         await transporter.sendMail(mailOptions);
         
+        logger.info('Email verification OTP sent successfully', {
+            email: email,
+            ip: req.ip
+        });
+        
         return res.status(200).json({ 
           success: true, 
           message: 'OTP sent successfully'
         });
       } catch (error) {
-        console.error('Error sending email:', error);
+        logger.error('Error sending email verification', {
+            error: error.message,
+            email: email,
+            ip: req.ip,
+            stack: error.stack
+        });
         return res.status(500).json({ 
           success: false, 
           message: 'Failed to send OTP email',
@@ -57,20 +80,57 @@ exports.emailverify= async(req, res)=>{
 exports.login = (req, res) => {
     const { email, password } = req.body;
 
-    db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
-        if (err) return res.status(500).json({ error: 'Database error' });
+    logger.info('Login attempt', {
+        email: email,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
 
-        if (results.length === 0) return res.status(404).json({ error: 'User not found' });
+    db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
+        if (err) {
+            logger.error('Database error during login', {
+                error: err.message,
+                email: email,
+                ip: req.ip,
+                stack: err.stack
+            });
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        if (results.length === 0) {
+            logger.warn('Login failed - user not found', {
+                email: email,
+                ip: req.ip
+            });
+            return res.status(404).json({ error: 'User not found' });
+        }
 
         const user = results[0];
 
-
-        if (!user.permitted) return res.status(403).json({ error: 'User not permitted yet' });
+        if (!user.permitted) {
+            logger.warn('Login failed - user not permitted', {
+                email: email,
+                userId: user.id,
+                ip: req.ip
+            });
+            return res.status(403).json({ error: 'User not permitted yet' });
+        }
 
         const isMatch = await bcrypt.compare(password, user.password_hash);
-        if (!isMatch) return res.status(401).json({ error: 'Invalid credentials' });
+        if (!isMatch) {
+            logger.warn('Login failed - invalid password', {
+                email: email,
+                userId: user.id,
+                ip: req.ip
+            });
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
 
-        console.log(isMatch);
+        logger.info('Password verification successful', {
+            email: email,
+            userId: user.id,
+            ip: req.ip
+        });
 
         // Generate JWT token with 1 month expiration
         const token = jwt.sign(
@@ -84,6 +144,15 @@ exports.login = (req, res) => {
             process.env.JWT_SECRET || 'your-secret-key',
             { expiresIn: '30d' } // 30 days expiration
         );
+
+        logger.info('User login successful', {
+            email: email,
+            userId: user.id,
+            businessName: user.business_name,
+            plan: user.plan,
+            country: user.country,
+            ip: req.ip
+        });
 
         res.json({
             message: 'Login successful',
@@ -101,17 +170,34 @@ exports.login = (req, res) => {
 exports.updateUserPermission = (req, res) => {
     const { userId, permit } = req.params; // Get both from params
     
+    logger.info('User permission update requested', {
+        userId: userId,
+        permit: permit,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
+    
     // Convert permit to number since URL params are strings
     const permitValue = parseInt(permit);
     
     // Validate input
     if (!userId) {
+        logger.warn('User permission update failed - missing userId', {
+            permit: permit,
+            ip: req.ip
+        });
         return res.status(400).json({
             error: 'User ID is required'
         });
     }
     
     if (permitValue !== 0 && permitValue !== 1) {
+        logger.warn('User permission update failed - invalid permit value', {
+            userId: userId,
+            permit: permit,
+            permitValue: permitValue,
+            ip: req.ip
+        });
         return res.status(400).json({
             error: 'Permit value must be 0 or 1'
         });
@@ -122,7 +208,13 @@ exports.updateUserPermission = (req, res) => {
    
     db.query(query, [permitValue, userId], (err, result) => {
         if (err) {
-            console.error('Database error:', err);
+            logger.error('Database error updating user permission', {
+                error: err.message,
+                userId: userId,
+                permitValue: permitValue,
+                ip: req.ip,
+                stack: err.stack
+            });
             return res.status(500).json({
                 error: 'Database error',
                 message: 'Failed to update user permission'
@@ -130,10 +222,21 @@ exports.updateUserPermission = (req, res) => {
         }
         
         if (result.affectedRows === 0) {
+            logger.warn('User permission update failed - user not found', {
+                userId: userId,
+                permitValue: permitValue,
+                ip: req.ip
+            });
             return res.status(404).json({
                 error: 'User not found'
             });
         }
+        
+        logger.info('User permission updated successfully', {
+            userId: userId,
+            permitValue: permitValue,
+            ip: req.ip
+        });
         
         res.json({
             success: true,
@@ -148,14 +251,29 @@ exports.updatePlanEndDate = (req, res) => {
     const { userId } = req.params;
     const { plan_end_date } = req.body;
     
+    logger.info('Plan end date update requested', {
+        userId: userId,
+        planEndDate: plan_end_date,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
+    
     // Validate input
     if (!userId) {
+        logger.warn('Plan end date update failed - missing userId', {
+            planEndDate: plan_end_date,
+            ip: req.ip
+        });
         return res.status(400).json({
             error: 'User ID is required'
         });
     }
     
     if (!plan_end_date) {
+        logger.warn('Plan end date update failed - missing plan_end_date', {
+            userId: userId,
+            ip: req.ip
+        });
         return res.status(400).json({
             error: 'Plan end date is required'
         });
@@ -164,6 +282,11 @@ exports.updatePlanEndDate = (req, res) => {
     // Validate date format (optional - you might want to add more robust date validation)
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
     if (!dateRegex.test(plan_end_date)) {
+        logger.warn('Plan end date update failed - invalid date format', {
+            userId: userId,
+            planEndDate: plan_end_date,
+            ip: req.ip
+        });
         return res.status(400).json({
             error: 'Invalid date format. Expected YYYY-MM-DD'
         });
@@ -174,7 +297,13 @@ exports.updatePlanEndDate = (req, res) => {
    
     db.query(query, [plan_end_date, userId], (err, result) => {
         if (err) {
-            console.error('Database error:', err);
+            logger.error('Database error updating plan end date', {
+                error: err.message,
+                userId: userId,
+                planEndDate: plan_end_date,
+                ip: req.ip,
+                stack: err.stack
+            });
             return res.status(500).json({
                 error: 'Database error',
                 message: 'Failed to update plan end date'
@@ -182,10 +311,21 @@ exports.updatePlanEndDate = (req, res) => {
         }
         
         if (result.affectedRows === 0) {
+            logger.warn('Plan end date update failed - user not found', {
+                userId: userId,
+                planEndDate: plan_end_date,
+                ip: req.ip
+            });
             return res.status(404).json({
                 error: 'User not found'
             });
         }
+        
+        logger.info('Plan end date updated successfully', {
+            userId: userId,
+            planEndDate: plan_end_date,
+            ip: req.ip
+        });
         
         res.json({
             success: true,
@@ -198,6 +338,11 @@ exports.updatePlanEndDate = (req, res) => {
 
 
 exports.getAllUsers = (req, res) => {
+    logger.info('Get all users requested', {
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
+
     const query = `
         SELECT 
             id,
@@ -211,7 +356,11 @@ exports.getAllUsers = (req, res) => {
 
     db.query(query, (err, results) => {
         if (err) {
-            console.error('Database error:', err);
+            logger.error('Database error retrieving all users', {
+                error: err.message,
+                ip: req.ip,
+                stack: err.stack
+            });
             return res.status(500).json({ 
                 error: 'Database error',
                 message: 'Failed to retrieve users'
@@ -228,6 +377,11 @@ exports.getAllUsers = (req, res) => {
                 : null
         }));
 
+        logger.info('All users retrieved successfully', {
+            userCount: users.length,
+            ip: req.ip
+        });
+
         res.json({
             success: true,
             users: users,
@@ -237,7 +391,6 @@ exports.getAllUsers = (req, res) => {
 };
 
 exports.register = async (req, res) => {
-
     const {
         selectedPlan,
         barcodeOption,
@@ -245,20 +398,32 @@ exports.register = async (req, res) => {
         businessDetails
     } = req.body;
 
+    logger.info('User registration requested', {
+        selectedPlan: selectedPlan,
+        barcodeOption: barcodeOption,
+        businessName: businessDetails?.businessName,
+        businessType: businessDetails?.businessType,
+        country: businessDetails?.country,
+        email: businessDetails?.email,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
+
     if (!businessDetails) {
+        logger.warn('Registration failed - missing business details', {
+            ip: req.ip
+        });
         return res.status(400).json({ message: 'Missing business details' });
     }
 
     const {
         businessName,
         businessType,
-        
         country,
         businessAddress,
         email,
         whatsapp
     } = businessDetails;
-
 
     try {
         const [existing] = await db.promise().query(
@@ -267,6 +432,10 @@ exports.register = async (req, res) => {
         );
 
         if (existing.length > 0) {
+            logger.warn('Registration failed - email already exists', {
+                email: email,
+                ip: req.ip
+            });
             return res.status(400).json({ message: 'Email already registered' });
         }
 
@@ -295,15 +464,29 @@ exports.register = async (req, res) => {
             ]
         );
 
-        // Log the inserted user id
-        console.log("Inserted user with ID:", result[0].insertId);
+        const userId = result[0].insertId;
+
+        logger.info('User registration successful', {
+            userId: userId,
+            email: email,
+            businessName: businessName,
+            plan: plan,
+            country: country,
+            ip: req.ip
+        });
 
         res.status(201).json({
             message: 'Registration successful',
-            userId: result[0].insertId // Return the inserted user ID
+            userId: userId // Return the inserted user ID
         });
     } catch (err) {
-        console.error('Registration error:', err);
+        logger.error('Registration error', {
+            error: err.message,
+            email: email,
+            businessName: businessName,
+            ip: req.ip,
+            stack: err.stack
+        });
         res.status(500).json({ error: 'Internal server error' });
     }
 };
@@ -313,14 +496,29 @@ exports.sendOtp = (req, res) => {
     const { email } = req.body;
     const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
 
+    logger.info('OTP send requested', {
+        email: email,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
+
     // Get user by email
     db.query("SELECT id FROM users WHERE email = ?", [email], (err, userRows) => {
         if (err) {
-            console.error("Error querying user:", err);
+            logger.error('Database error querying user for OTP', {
+                error: err.message,
+                email: email,
+                ip: req.ip,
+                stack: err.stack
+            });
             return res.status(500).json({ success: false, message: "Server error" });
         }
 
         if (userRows.length === 0) {
+            logger.warn('OTP send failed - user not found', {
+                email: email,
+                ip: req.ip
+            });
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
@@ -329,7 +527,13 @@ exports.sendOtp = (req, res) => {
         // Insert OTP into otps table
         db.query("INSERT INTO otps (user_id, email, otp) VALUES (?, ?, ?)", [userId, email, otp], (err, result) => {
             if (err) {
-                console.error("Error inserting OTP:", err);
+                logger.error('Database error inserting OTP', {
+                    error: err.message,
+                    email: email,
+                    userId: userId,
+                    ip: req.ip,
+                    stack: err.stack
+                });
                 return res.status(500).json({ success: false, message: "Failed to store OTP" });
             }
 
@@ -341,9 +545,21 @@ exports.sendOtp = (req, res) => {
                 text: `Your OTP is ${otp}. It expires in 5 minutes.`,
             }, (err, info) => {
                 if (err) {
-                    console.error("Error sending email:", err);
+                    logger.error('Email sending error for OTP', {
+                        error: err.message,
+                        email: email,
+                        userId: userId,
+                        ip: req.ip,
+                        stack: err.stack
+                    });
                     return res.status(500).json({ success: false, message: "Failed to send OTP" });
                 }
+
+                logger.info('OTP sent successfully', {
+                    email: email,
+                    userId: userId,
+                    ip: req.ip
+                });
 
                 return res.json({ success: true, message: "OTP sent successfully" });
             });
@@ -355,27 +571,56 @@ exports.sendOtp = (req, res) => {
 exports.verifyOtp = (req, res) => {
     const { email, otp } = req.body;
 
+    logger.info('OTP verification requested', {
+        email: email,
+        hasOtp: !!otp,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
+
     const query = "SELECT * FROM otps WHERE email = ? ORDER BY id DESC LIMIT 1";
 
     db.query(query, [email], (err, results) => {
         if (err) {
-            console.error("DB Error:", err);
+            logger.error('Database error verifying OTP', {
+                error: err.message,
+                email: email,
+                ip: req.ip,
+                stack: err.stack
+            });
             return res.status(500).json({ success: false, message: "Verification error" });
         }
 
         const record = results[0];
 
         if (!record) {
+            logger.warn('OTP verification failed - OTP not found', {
+                email: email,
+                ip: req.ip
+            });
             return res.status(400).json({ success: false, message: "OTP not found" });
         }
 
         if (record.otp != otp) {
+            logger.warn('OTP verification failed - invalid OTP', {
+                email: email,
+                ip: req.ip
+            });
             return res.status(400).json({ success: false, message: "Invalid OTP" });
         }
 
         if (new Date() > new Date(record.expires_at)) {
+            logger.warn('OTP verification failed - OTP expired', {
+                email: email,
+                ip: req.ip
+            });
             return res.status(400).json({ success: false, message: "OTP expired" });
         }
+
+        logger.info('OTP verification successful', {
+            email: email,
+            ip: req.ip
+        });
 
         return res.json({ success: true, message: "OTP verified" });
     });
@@ -385,11 +630,29 @@ exports.verifyOtp = (req, res) => {
 exports.updatePassword = async (req, res) => {
     const { email, newPassword, confirmPassword } = req.body;
 
+    logger.info('Password update requested', {
+        email: email,
+        hasNewPassword: !!newPassword,
+        hasConfirmPassword: !!confirmPassword,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
+
     if (!email || !newPassword || !confirmPassword) {
+        logger.warn('Password update failed - missing required fields', {
+            email: email,
+            hasNewPassword: !!newPassword,
+            hasConfirmPassword: !!confirmPassword,
+            ip: req.ip
+        });
         return res.status(400).json({ message: "Email, new password, and confirm password are required." });
     }
 
     if (newPassword !== confirmPassword) {
+        logger.warn('Password update failed - passwords do not match', {
+            email: email,
+            ip: req.ip
+        });
         return res.status(400).json({ message: "Passwords do not match." });
     }
 
@@ -402,12 +665,25 @@ exports.updatePassword = async (req, res) => {
         const [result] = await db.promise().query(query, [hashedPassword, email]);
 
         if (result.affectedRows > 0) {
+            logger.info('Password updated successfully', {
+                email: email,
+                ip: req.ip
+            });
             return res.status(200).json({ message: "Password updated successfully." });
         } else {
+            logger.warn('Password update failed - user not found', {
+                email: email,
+                ip: req.ip
+            });
             return res.status(500).json({ message: "Unable to update password." });
         }
     } catch (error) {
-        console.error("Error updating password:", error);
+        logger.error('Error updating password', {
+            error: error.message,
+            email: email,
+            ip: req.ip,
+            stack: error.stack
+        });
         return res.status(500).json({ message: "Internal server error." });
     }
 };
