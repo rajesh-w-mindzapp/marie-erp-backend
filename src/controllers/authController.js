@@ -4,13 +4,32 @@ const db = require('../config/db');
 const nodemailer = require("nodemailer")
 const logger = require('../config/logger');
 
-const transporter = nodemailer.createTransport({
-    service: 'gmail', // or any other SMTP service you're using
-    auth: {
-        user: process.env.USER_EMAIL, // your email
-        pass: process.env.USER_PASS, // your email password or app-specific password
-    },
-});
+// const transporter = nodemailer.createTransport({
+//     service: 'gmail', // or any other SMTP service you're using
+//     auth: {
+//         user: process.env.USER_EMAIL, // your email
+//         pass: process.env.USER_PASS, // your email password or app-specific password
+//     },
+// });
+
+const { Resend } = require('resend');
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+async function sendEmail({ to, subject, html }) {
+  try {
+    return await resend.emails.send({
+      from: process.env.EMAIL_USER,
+      to,
+      subject,
+      html,
+    });
+  } catch (err) {
+    logger.error('Resend send error', { error: err.message, stack: err.stack });
+    throw err;
+  }
+}
+
 
 exports.emailverify= async(req, res)=>{
     try {
@@ -51,11 +70,19 @@ exports.emailverify= async(req, res)=>{
         };
     
         // Send email
-        await transporter.sendMail(mailOptions);
-        
-        logger.info('Email verification OTP sent successfully', {
-            email: email,
-            ip: req.ip
+        await sendEmail(mailOptions).then(info => {
+            logger.info('Email verification OTP sent successfully', {
+                email: email,
+                ip: req.ip,
+                messageId: info.id
+            });
+        }).catch(err => {
+            logger.error('Error sending email verification', {
+                error: err.message,
+                email: email,
+                ip: req.ip,
+                stack: err.stack
+            });
         });
         
         return res.status(200).json({ 
@@ -538,31 +565,31 @@ exports.sendOtp = (req, res) => {
             }
 
             // Send OTP via email
-            transporter.sendMail({
-                from: process.env.USER_EMAIL,
-                to: email,
-                subject: "OTP Verification - Marie ERP",
-                text: `Your OTP is ${otp}. It expires in 5 minutes.`,
-            }, (err, info) => {
-                if (err) {
-                    logger.error('Email sending error for OTP', {
-                        error: err.message,
-                        email: email,
-                        userId: userId,
-                        ip: req.ip,
-                        stack: err.stack
-                    });
-                    return res.status(500).json({ success: false, message: "Failed to send OTP" });
-                }
-
-                logger.info('OTP sent successfully', {
-                    email: email,
-                    userId: userId,
-                    ip: req.ip
-                });
-
-                return res.json({ success: true, message: "OTP sent successfully" });
+           // sendEmail returns a Promise—use .then/.catch()
+        sendEmail({
+            to:      email,
+            subject: 'OTP Verification - Marie ERP',
+            html:    `<p>Your OTP is <strong>${otp}</strong>. It expires in 5 minutes.</p>`
+          })
+          .then(info => {
+            logger.info('OTP sent successfully via Resend', {
+              email,
+              userId,
+              ip: req.ip,
+              messageId: info.id
             });
+            res.json({ success: true, message: 'OTP sent successfully' });
+          })
+          .catch(err => {
+            logger.error('Email sending error for OTP', {
+              error: err.message,
+              email,
+              userId,
+              ip: req.ip,
+              stack: err.stack
+            });
+            res.status(500).json({ success: false, message: 'Failed to send OTP' });
+          });
         });
     });
 };
