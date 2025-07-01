@@ -51,13 +51,13 @@ const createDefaultCategories = async (userId) => {
 exports.getCategories = async (req, res) => {
   try {
     const userId = req.query.userId || req.user.id;
-    
+
     logger.info('Get categories requested', {
       userId: userId,
       ip: req.ip,
       userAgent: req.get('User-Agent')
     });
-    
+
     if (!userId) {
       logger.warn('Get categories failed - missing userId', {
         ip: req.ip
@@ -65,68 +65,73 @@ exports.getCategories = async (req, res) => {
       return res.status(400).json({ message: 'User ID is required' });
     }
 
-    // Check if user has any categories
-    db.query(
-      'SELECT COUNT(*) as count FROM categories WHERE user_id = ?',
-      [userId],
-      async (err, results) => {
-        if (err) {
-          logger.error('Database error checking categories count', {
-            error: err.message,
-            userId: userId,
-            ip: req.ip,
-            stack: err.stack
-          });
-          return res.status(500).json({ message: 'Error fetching categories' });
-        }
-
-        const categoryCount = results[0].count;
-        logger.debug('Category count check completed', {
-          userId: userId,
-          categoryCount: categoryCount
+    // Helper to promisify db.query
+    const queryAsync = (sql, params) => {
+      return new Promise((resolve, reject) => {
+        db.query(sql, params, (err, results) => {
+          if (err) reject(err);
+          else resolve(results);
         });
+      });
+    };
 
-        // If user has no categories, create default ones
-        if (categoryCount === 0) {
-          try {
-            await createDefaultCategories(userId);
-          } catch (error) {
-            logger.error('Error creating default categories', {
-              error: error.message,
-              userId: userId,
-              ip: req.ip,
-              stack: error.stack
-            });
-            return res.status(500).json({ message: 'Error creating default categories' });
-          }
-        }
+    // Check if user has any categories
+    let results;
+    try {
+      results = await queryAsync('SELECT COUNT(*) as count FROM categories WHERE user_id = ?', [userId]);
+    } catch (err) {
+      logger.error('Database error checking categories count', {
+        error: err.message,
+        userId: userId,
+        ip: req.ip,
+        stack: err.stack
+      });
+      return res.status(500).json({ message: 'Error fetching categories' });
+    }
 
-        // Get all categories for the user
-        db.query(
-          'SELECT * FROM categories WHERE user_id = ? ORDER BY name ASC',
-          [userId],
-          (err, results) => {
-            if (err) {
-              logger.error('Database error fetching categories', {
-                error: err.message,
-                userId: userId,
-                ip: req.ip,
-                stack: err.stack
-              });
-              return res.status(500).json({ message: 'Error fetching categories' });
-            }
+    const categoryCount = results[0].count;
+    logger.debug('Category count check completed', {
+      userId: userId,
+      categoryCount: categoryCount
+    });
 
-            logger.info('Categories retrieved successfully', {
-              userId: userId,
-              categoryCount: results.length,
-              ip: req.ip
-            });
-
-            res.json(results);
-          }
-        );
+    // If user has no categories, create default ones
+    if (categoryCount === 0) {
+      try {
+        await createDefaultCategories(userId);
+      } catch (error) {
+        logger.error('Error creating default categories', {
+          error: error.message,
+          userId: userId,
+          ip: req.ip,
+          stack: error.stack
+        });
+        return res.status(500).json({ message: 'Error creating default categories' });
       }
-    );
+    }
+
+    // Get all categories for the user
+    let categories;
+    try {
+      categories = await queryAsync('SELECT * FROM categories WHERE user_id = ? ORDER BY name ASC', [userId]);
+    } catch (err) {
+      logger.error('Database error fetching categories', {
+        error: err.message,
+        userId: userId,
+        ip: req.ip,
+        stack: err.stack
+      });
+      return res.status(500).json({ message: 'Error fetching categories' });
+    }
+
+    logger.info('Categories retrieved successfully', {
+      userId: userId,
+      categoryCount: categories.length,
+      ip: req.ip
+    });
+
+    res.json(categories);
+
   } catch (error) {
     logger.error('Unexpected error in getCategories', {
       error: error.message,
@@ -142,7 +147,7 @@ exports.getCategories = async (req, res) => {
 exports.createCategory = async (req, res) => {
   try {
     const { name, color, user_id } = req.body;
-    
+
     logger.info('Create category requested', {
       name: name,
       color: color,
@@ -150,7 +155,7 @@ exports.createCategory = async (req, res) => {
       ip: req.ip,
       userAgent: req.get('User-Agent')
     });
-    
+
     // Check if category with same name already exists for this user
     db.query(
       'SELECT * FROM categories WHERE user_id = ? AND name = ?',
@@ -240,14 +245,14 @@ exports.deleteCategory = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.query.userId || req.user.id;
-    
+
     logger.info('Delete category requested', {
       categoryId: id,
       userId: userId,
       ip: req.ip,
       userAgent: req.get('User-Agent')
     });
-    
+
     if (!userId) {
       logger.warn('Delete category failed - missing userId', {
         categoryId: id,
@@ -352,7 +357,7 @@ exports.getCategoryNameById = (req, res) => {
           ip: req.ip,
           stack: err.stack
         });
-        return res.status(500).json({ message: 'Error fetching Category name'})
+        return res.status(500).json({ message: 'Error fetching Category name' })
       }
 
       if (rows.length === 0) {
