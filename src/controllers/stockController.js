@@ -110,7 +110,7 @@ exports.createStockBatch = async (req, res) => {
 exports.createStockOut = async (req, res) => {
   try {
     const { item_id, user_id, quantity } = req.body;
-
+    
     logger.info('Create stock out requested', {
       itemId: item_id,
       userId: user_id,
@@ -118,7 +118,7 @@ exports.createStockOut = async (req, res) => {
       ip: req.ip,
       userAgent: req.get('User-Agent')
     });
-
+    
     if (!item_id || !user_id || !quantity) {
       logger.warn('Create stock out failed - missing required fields', {
         itemId: item_id,
@@ -129,124 +129,136 @@ exports.createStockOut = async (req, res) => {
       return res.status(400).json({ message: 'Missing required fields' });
     }
 
-    const connection = await db.promise().getConnection();
-    try {
-      await connection.beginTransaction();
-
-      logger.info('Starting stock out transaction', {
-        itemId: item_id,
-        userId: user_id,
-        quantity: quantity,
-        ip: req.ip
-      });
-
-      // Get item details
-      const [items] = await connection.query(
-        `SELECT i.*, id.package_type, id.measure, id.package_weight 
-         FROM items i 
-         JOIN item_details id ON i.id = id.item_id 
-         WHERE i.id = ? AND i.user_id = ?`,
-        [item_id, user_id]
-      );
-
-      if (items.length === 0) {
-        await connection.rollback();
-        logger.warn('Stock out failed - item not found or does not belong to user', {
+    db.beginTransaction(async (err) => {
+      if (err) {
+        logger.error('Database error starting transaction for stock out', {
+          error: err.message,
           itemId: item_id,
           userId: user_id,
-          ip: req.ip
+          quantity: quantity,
+          ip: req.ip,
+          stack: err.stack
         });
-        return res.status(404).json({ message: 'Item not found or does not belong to user' });
+        return res.status(500).json({ message: 'Error processing stock out' });
       }
 
-      // Get all batches with remaining stock, ordered by oldest first
-      const [batches] = await connection.query(
-        'SELECT id, remaining_quantity FROM stock_batches WHERE item_id = ? AND remaining_quantity > 0 ORDER BY created_at ASC',
-        [item_id]
-      );
-
-      if (batches.length === 0) {
-        await connection.rollback();
-        logger.warn('Stock out failed - no stock available', {
+      try {
+        logger.info('Starting stock out transaction', {
           itemId: item_id,
           userId: user_id,
           quantity: quantity,
           ip: req.ip
         });
-        return res.status(400).json({ message: 'No stock available' });
-      }
 
-      // Calculate total available stock
-      const totalAvailableStock = batches.reduce((sum, batch) => sum + batch.remaining_quantity, 0);
+        // Get item details
+        const [items] = await db.promise().query(
+          `SELECT i.*, id.package_type, id.measure, id.package_weight 
+           FROM items i 
+           JOIN item_details id ON i.id = id.item_id 
+           WHERE i.id = ? AND i.user_id = ?`,
+          [item_id, user_id]
+        );
 
-      logger.info('Stock availability check completed', {
-        itemId: item_id,
-        userId: user_id,
-        requestedQuantity: quantity,
-        totalAvailableStock: totalAvailableStock,
-        batchCount: batches.length,
-        ip: req.ip
-      });
+        if (items.length === 0) {
+          await db.promise().rollback();
+          logger.warn('Stock out failed - item not found or does not belong to user', {
+            itemId: item_id,
+            userId: user_id,
+            ip: req.ip
+          });
+          return res.status(404).json({ message: 'Item not found or does not belong to user' });
+        }
 
-      if (totalAvailableStock < quantity) {
-        await connection.rollback();
-        logger.warn('Stock out failed - insufficient stock available', {
+        const item = items[0];
+        
+        // Get all batches with remaining stock, ordered by oldest first
+        const [batches] = await db.promise().query(
+          'SELECT id, remaining_quantity FROM stock_batches WHERE item_id = ? AND remaining_quantity > 0 ORDER BY created_at ASC',
+          [item_id]
+        );
+
+        if (batches.length === 0) {
+          await db.promise().rollback();
+          logger.warn('Stock out failed - no stock available', {
+            itemId: item_id,
+            userId: user_id,
+            quantity: quantity,
+            ip: req.ip
+          });
+          return res.status(400).json({ message: 'No stock available' });
+        }
+
+        // Calculate total available stock
+        const totalAvailableStock = batches.reduce((sum, batch) => sum + batch.remaining_quantity, 0);
+        
+        logger.info('Stock availability check completed', {
           itemId: item_id,
           userId: user_id,
           requestedQuantity: quantity,
           totalAvailableStock: totalAvailableStock,
+          batchCount: batches.length,
           ip: req.ip
         });
-        return res.status(400).json({ message: 'Insufficient stock available' });
+        
+        // For both loose and package types, we compare direct quantities
+        if (totalAvailableStock < quantity) {
+          await db.promise().rollback();
+          logger.warn('Stock out failed - insufficient stock available', {
+            itemId: item_id,
+            userId: user_id,
+            requestedQuantity: quantity,
+            totalAvailableStock: totalAvailableStock,
+            ip: req.ip
+          });
+          return res.status(400).json({ message: 'Insufficient stock available' });
+        }
+
+        let remainingToDeduct = quantity;
+
+        // Process stock out across multiple batches
+        for (const batch of batches) {
+          if (remainingToDeduct <= 0) break;
+
+          const quantityToDeduct = Math.min(remainingToDeduct, batch.remaining_quantity);
+          
+          // Create stock out transaction
+          await db.promise().query(
+            'INSERT INTO stock_out_transactions (item_id, user_id, batch_id, quantity) VALUES (?, ?, ?, ?)',
+            [item_id, user_id, batch.id, quantityToDeduct]
+          );
+
+          // Update batch remaining quantity
+          await db.promise().query(
+            'UPDATE stock_batches SET remaining_quantity = remaining_quantity - ? WHERE id = ?',
+            [quantityToDeduct, batch.id]
+          );
+
+          remainingToDeduct -= quantityToDeduct;
+        }
+
+        await db.promise().commit();
+        
+        logger.info('Stock out transaction completed successfully', {
+          itemId: item_id,
+          userId: user_id,
+          quantity: quantity,
+          ip: req.ip
+        });
+        
+        res.status(201).json({ message: 'Stock out successful' });
+      } catch (error) {
+        await db.promise().rollback();
+        logger.error('Error during stock out transaction', {
+          error: error.message,
+          itemId: item_id,
+          userId: user_id,
+          quantity: quantity,
+          ip: req.ip,
+          stack: error.stack
+        });
+        throw error;
       }
-
-      let remainingToDeduct = quantity;
-
-      // Process stock out across multiple batches
-      for (const batch of batches) {
-        if (remainingToDeduct <= 0) break;
-
-        const quantityToDeduct = Math.min(remainingToDeduct, batch.remaining_quantity);
-
-        // Create stock out transaction
-        await connection.query(
-          'INSERT INTO stock_out_transactions (item_id, user_id, batch_id, quantity) VALUES (?, ?, ?, ?)',
-          [item_id, user_id, batch.id, quantityToDeduct]
-        );
-
-        // Update batch remaining quantity
-        await connection.query(
-          'UPDATE stock_batches SET remaining_quantity = remaining_quantity - ? WHERE id = ?',
-          [quantityToDeduct, batch.id]
-        );
-
-        remainingToDeduct -= quantityToDeduct;
-      }
-
-      await connection.commit();
-
-      logger.info('Stock out transaction completed successfully', {
-        itemId: item_id,
-        userId: user_id,
-        quantity: quantity,
-        ip: req.ip
-      });
-
-      res.status(201).json({ message: 'Stock out successful' });
-    } catch (error) {
-      await connection.rollback();
-      logger.error('Error during stock out transaction', {
-        error: error.message,
-        itemId: item_id,
-        userId: user_id,
-        quantity: quantity,
-        ip: req.ip,
-        stack: error.stack
-      });
-      res.status(500).json({ message: 'Error processing stock out' });
-    } finally {
-      connection.release();
-    }
+    });
   } catch (error) {
     logger.error('Unexpected error in createStockOut', {
       error: error.message,

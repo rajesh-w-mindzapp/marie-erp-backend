@@ -342,84 +342,106 @@ exports.getCategoryItems = async (req, res) => {
 
 // Delete an item and all related data
 exports.deleteItem = async (req, res) => {
-  const { itemId, userId } = req.params;
-
-  logger.info('Delete item requested', {
-    itemId: itemId,
-    userId: userId,
-    ip: req.ip,
-    userAgent: req.get('User-Agent')
-  });
-
-  // Validate required fields
-  if (!itemId || !userId) {
-    logger.warn('Delete item failed - missing required fields', {
-      itemId: itemId,
-      userId: userId,
-      ip: req.ip
-    });
-    return res.status(400).json({ message: 'Missing required fields' });
-  }
-
-  const connection = db.promise();
   try {
-    await connection.beginTransaction();
-
-    logger.info('Starting item deletion transaction', {
+    const { itemId, userId } = req.params;
+    
+    logger.info('Delete item requested', {
       itemId: itemId,
       userId: userId,
-      ip: req.ip
+      ip: req.ip,
+      userAgent: req.get('User-Agent')
     });
-
-    // First, delete stock out transactions
-    await connection.query(
-      'DELETE FROM stock_out_transactions WHERE item_id = ?',
-      [itemId]
-    );
-
-    // Then, delete stock batches
-    await connection.query(
-      'DELETE FROM stock_batches WHERE item_id = ?',
-      [itemId]
-    );
-
-    await connection.query(
-      'DELETE FROM item_details WHERE item_id = ?',
-      [itemId]
-    );
-
-    // Finally, delete the item
-    const [result] = await connection.query(
-      'DELETE FROM items WHERE id = ? AND user_id = ?',
-      [itemId, userId]
-    );
-
-    if (result.affectedRows === 0) {
-      await connection.rollback();
-      logger.warn('Delete item failed - item not found or does not belong to user', {
+    
+    // Validate required fields
+    if (!itemId || !userId) {
+      logger.warn('Delete item failed - missing required fields', {
         itemId: itemId,
         userId: userId,
         ip: req.ip
       });
-      return res.status(404).json({ message: 'Item not found or does not belong to user' });
+      return res.status(400).json({ message: 'Missing required fields' });
     }
 
-    // Commit transaction
-    await connection.commit();
+    // Start transaction
+    db.beginTransaction(async (err) => {
+      if (err) {
+        logger.error('Database error starting transaction for item deletion', {
+          error: err.message,
+          itemId: itemId,
+          userId: userId,
+          ip: req.ip,
+          stack: err.stack
+        });
+        return res.status(500).json({ message: 'Error deleting item' });
+      }
 
-    logger.info('Item and all related data deleted successfully', {
-      itemId: itemId,
-      userId: userId,
-      ip: req.ip
+      try {
+        logger.info('Starting item deletion transaction', {
+          itemId: itemId,
+          userId: userId,
+          ip: req.ip
+        });
+
+        // First, delete stock out transactions
+        await db.promise().query(
+          'DELETE FROM stock_out_transactions WHERE item_id = ?',
+          [itemId]
+        );
+
+        // Then, delete stock batches
+        await db.promise().query(
+          'DELETE FROM stock_batches WHERE item_id = ?',
+          [itemId]
+        );
+
+        await db.promise().query(
+          'DELETE FROM item_details WHERE item_id = ?',
+          [itemId]
+        );
+        
+        // Finally, delete the item
+        const [result] = await db.promise().query(
+          'DELETE FROM items WHERE id = ? AND user_id = ?',
+          [itemId, userId]
+        );
+
+        if (result.affectedRows === 0) {
+          await db.promise().rollback();
+          logger.warn('Delete item failed - item not found or does not belong to user', {
+            itemId: itemId,
+            userId: userId,
+            ip: req.ip
+          });
+          return res.status(404).json({ message: 'Item not found or does not belong to user' });
+        }
+
+        // Commit transaction
+        await db.promise().commit();
+        
+        logger.info('Item and all related data deleted successfully', {
+          itemId: itemId,
+          userId: userId,
+          ip: req.ip
+        });
+        
+        res.status(200).json({ message: 'Item and all related data deleted successfully' });
+      } catch (error) {
+        await db.promise().rollback();
+        logger.error('Error during item deletion transaction', {
+          error: error.message,
+          itemId: itemId,
+          userId: userId,
+          ip: req.ip,
+          stack: error.stack
+        });
+        throw error;
+      }
     });
-
-    res.status(200).json({ message: 'Item and all related data deleted successfully' });
   } catch (error) {
-    await connection.rollback();
-    logger.error('Error during item deletion transaction', {
+    logger.error('Unexpected error in deleteItem', {
       error: error.message,
-      itemId: itemId,
-      userId: userId,
+      itemId: req.params?.itemId,
+      userId: req.params?.userId,
       ip: req.ip,
       stack: error.stack
     });
