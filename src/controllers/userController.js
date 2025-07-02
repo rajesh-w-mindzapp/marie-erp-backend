@@ -3,44 +3,39 @@ const logger = require('../config/logger');
 
 exports.getUserProfile = async (req, res) => {
     try {
-        const userId = req.query.userId;
+        const { userId } = req.query;
 
         logger.info('Get user profile requested', {
-            userId: userId,
+            userId,
             ip: req.ip,
             userAgent: req.get('User-Agent')
         });
 
         if (!userId) {
-            logger.warn('Get user profile failed - missing userId', {
-                ip: req.ip
-            });
+            logger.warn('Get user profile failed - missing userId', { ip: req.ip });
             return res.status(400).json({ message: 'User ID is required' });
         }
 
-        const [userProfile] = await db.promise().query(
+        const [userProfile] = await db.query(
             `SELECT 
-                u.id,
-                u.business_name,
-                u.email,
-                u.plan,
-                u.plan_end_date
-             FROM users u
-             WHERE u.id = ?`,
+         u.id,
+         u.business_name,
+         u.email,
+         u.plan,
+         u.plan_end_date
+       FROM users u
+       WHERE u.id = ?`,
             [userId]
         );
 
         if (userProfile.length === 0) {
-            logger.warn('Get user profile failed - user not found', {
-                userId: userId,
-                ip: req.ip
-            });
+            logger.warn('Get user profile failed - user not found', { userId, ip: req.ip });
             return res.status(404).json({ message: 'User not found' });
         }
 
         const profile = userProfile[0];
         logger.info('User profile retrieved successfully', {
-            userId: userId,
+            userId,
             businessName: profile.business_name,
             email: profile.email,
             plan: profile.plan,
@@ -55,7 +50,6 @@ exports.getUserProfile = async (req, res) => {
             plan: profile.plan,
             plan_end_date: profile.plan_end_date
         });
-
     } catch (error) {
         logger.error('Unexpected error in getUserProfile', {
             error: error.message,
@@ -65,4 +59,4 @@ exports.getUserProfile = async (req, res) => {
         });
         res.status(500).json({ message: 'Error fetching user profile' });
     }
-}; 
+};
